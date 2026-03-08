@@ -54,7 +54,7 @@ A **multi-agent AI system** built with **FastAPI** that answers FAQ queries usin
 │          │               │    │                    │               │
 │          │ 1. Semantic   │    │  ┌──────────────┐  │               │
 │          │    Search     │    │  │ Weather Tool │  │               │
-│          │ 2. Context    │    │  │ (OpenWeather)│  │               │
+│          │ 2. Context    │    │  │ (Open-Meteo) │  │               │
 │          │    Building   │    │  └──────────────┘  │               │
 │          │ 3. LLM Answer │    │  ┌──────────────┐  │               │
 │          │    Generation │    │  │ Todo Tools   │  │               │
@@ -64,7 +64,12 @@ A **multi-agent AI system** built with **FastAPI** that answers FAQ queries usin
 │          │   ChromaDB    │              │                           │
 │          │ Vector Store  │    ┌─────────▼──────────┐               │
 │          │ (FAQ Data)    │    │  FastMCP Todo      │               │
-│          └───────────────┘    │  Server (in-memory)│               │
+│          └───────────────┘    │  Server (PostgreSQL)│              │
+│                               └─────────┬──────────┘               │
+│                                         │                          │
+│                               ┌─────────▼──────────┐               │
+│                               │   PostgreSQL DB    │               │
+│                               │  (Users + Todos)   │               │
 │                               └────────────────────┘               │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -81,6 +86,7 @@ The application follows a **microservices architecture** with two independently 
 |----------------|-----------|------|------------------------------------------------|
 | **Backend**     | FastAPI   | 8000 | API server, agent orchestration, RAG, MCP      |
 | **Frontend**    | Streamlit | 8501 | User interface, communicates via REST API only  |
+| **Database**    | PostgreSQL| 5432 | Persistent storage for users and todos          |
 
 The frontend is **loosely coupled** — it only knows the backend's URL and communicates exclusively through HTTP REST calls. No shared code, no shared state.
 
@@ -131,7 +137,7 @@ User Query → Embedding → Similarity Search (top-4) → Context Building → 
 
 ### FastMCP Integration
 
-The Todo service is implemented as a **FastMCP 2.0 server** with tools exposed via the MCP protocol:
+The Todo service is implemented as a **FastMCP 3.x server** with tools exposed via the MCP protocol. Todos are persisted in **PostgreSQL** via SQLAlchemy:
 
 - `create_task` — Create a new todo item
 - `list_tasks` — List all tasks (with filter)
@@ -139,7 +145,7 @@ The Todo service is implemented as a **FastMCP 2.0 server** with tools exposed v
 - `update_task` — Modify task title/description/status
 - `delete_task` — Remove a task
 
-The backend uses a **FastMCP Client** with in-memory transport (no network hop for MCP calls within the same process), while also exposing REST API endpoints for direct access.
+The backend uses a **FastMCP Client** with in-memory transport (no network hop for MCP calls within the same process), while also exposing REST API endpoints for direct access. The agent also supports **keyword-based task resolution** — users can refer to tasks by name instead of ID.
 
 ### JWT Authentication
 
@@ -169,7 +175,9 @@ User Input → Streamlit → POST /chat → JWT Validation → Orchestrator
 | LLM              | OpenAI GPT-4.1 Mini            |
 | Embeddings       | OpenAI text-embedding-3-small  |
 | Vector Database  | ChromaDB                       |
-| MCP Server       | FastMCP 2.0                    |
+| Database         | PostgreSQL, SQLAlchemy, Alembic|
+| MCP Server       | FastMCP 3.x                    |
+| Weather API      | Open-Meteo (free, no key)      |
 | Authentication   | JWT (python-jose)              |
 | Frontend         | Streamlit                      |
 | HTTP Client      | httpx (async), requests         |
@@ -190,13 +198,24 @@ Multi_Agent_RAG_With_FastMCP/
 │
 ├── backend/
 │   ├── Dockerfile
+│   ├── .dockerignore
 │   ├── requirements.txt
 │   ├── pytest.ini
+│   ├── alembic.ini             # Alembic config (URL overridden by env.py)
 │   ├── .env                    # Secret variables (gitignored)
 │   ├── .env.example            # Template for env vars
+│   ├── alembic/                # Database migrations
+│   │   ├── env.py              # Migration environment (reads DATABASE_URL)
+│   │   └── versions/           # Migration scripts
 │   ├── app/
 │   │   ├── main.py             # FastAPI entry point, CORS, lifespan
 │   │   ├── config.py           # Settings from env vars
+│   │   ├── database.py         # SQLAlchemy engine, session, Base
+│   │   │
+│   │   ├── models/             # ORM models
+│   │   │   ├── __init__.py     # Exports User, Todo
+│   │   │   ├── user.py         # User model
+│   │   │   └── todo.py         # Todo model
 │   │   │
 │   │   ├── auth/               # Authentication module
 │   │   │   ├── routes.py       # POST /auth/login, /auth/register
@@ -225,7 +244,7 @@ Multi_Agent_RAG_With_FastMCP/
 │   │   │   └── vectorstore.py  # ChromaDB build/query
 │   │   │
 │   │   └── mcp/                # FastMCP integration
-│   │       ├── todo_server.py  # FastMCP server with CRUD tools
+│   │       ├── todo_server.py  # FastMCP server with CRUD tools (PostgreSQL)
 │   │       └── client.py       # FastMCP client (in-memory transport)
 │   │
 │   └── tests/
@@ -237,6 +256,7 @@ Multi_Agent_RAG_With_FastMCP/
 │
 └── frontend/
     ├── Dockerfile
+    ├── .dockerignore
     ├── requirements.txt
     ├── .env
     ├── .env.example
@@ -255,7 +275,7 @@ Multi_Agent_RAG_With_FastMCP/
 
 - Python 3.12+
 - OpenAI API key
-- (Optional) OpenWeatherMap API key for live weather
+- PostgreSQL 16+ (or use Docker which includes it)
 - (Optional) Docker & Docker Compose
 
 ### Local Development (Without Docker)
@@ -275,7 +295,10 @@ pip install -r requirements.txt
 
 # Configure environment
 cp .env.example .env
-# Edit .env with your API keys
+# Edit .env with your OPENAI_API_KEY and DATABASE_URL
+
+# Run database migrations
+alembic upgrade head
 
 # Run the backend
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
@@ -320,26 +343,33 @@ You can also register a new account through the UI or API.
 
 ```bash
 # From the project root
+cp backend/.env.example backend/.env
+# Edit backend/.env with your OPENAI_API_KEY
+
 docker-compose up --build
 ```
 
-This starts:
+This starts three services:
+- **PostgreSQL** at localhost:5432 (persistent via Docker volume)
 - **Backend** at http://localhost:8000 (API + Swagger UI at `/docs`)
 - **Frontend** at http://localhost:8501
 
-### Environment Variables
+The backend container automatically runs Alembic migrations on startup.
 
-Before running, create `backend/.env` from the example:
-```bash
-cp backend/.env.example backend/.env
-# Edit backend/.env with your OPENAI_API_KEY
-```
+### Docker Networking
+
+The `docker-compose.yml` overrides certain `.env` values for container networking:
+- `DATABASE_URL` → points to `db:5432` instead of `localhost:5432`
+- `BACKEND_URL` → frontend uses `http://backend:8000` internally
+- `FAQ_CSV_PATH` → `/data/faqs.csv` (mounted from `./data`)
+
+Your `.env` keeps `localhost` values so local development (without Docker) still works.
 
 ### Stop Services
 
 ```bash
 docker-compose down
-# To also remove volumes (clears ChromaDB data):
+# To also remove volumes (clears DB and ChromaDB data):
 docker-compose down -v
 ```
 
@@ -370,10 +400,9 @@ Once the backend is running, interactive API docs are at:
 ### Example Usage
 
 ```bash
-# 1. Login
+# 1. Login (uses form-encoded data for OAuth2 compatibility)
 TOKEN=$(curl -s -X POST http://localhost:8000/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"admin123"}' \
+  -d 'username=admin&password=admin123' \
   | jq -r '.access_token')
 
 # 2. Chat (FAQ query)
@@ -435,8 +464,8 @@ Uses LangGraph `StateGraph` with typed state (`AgentState`). The LLM classifies 
 **File**: `backend/app/agents/tool_agent.py`
 
 Dispatches to:
-- **Weather Tool**: Calls OpenWeatherMap API (falls back to mock data if API key is `demo`)
-- **Todo Tools**: Calls the FastMCP Todo server via in-memory MCP client
+- **Weather Tool**: Calls the **Open-Meteo API** (free, no API key required). Uses a 2-step flow: geocode city name → fetch current weather.
+- **Todo Tools**: Calls the **FastMCP Todo server** via in-memory MCP client. Supports keyword-based task resolution — users can refer to tasks by name/description instead of ID.
 
 ---
 
@@ -451,7 +480,7 @@ All secrets and config are stored in `backend/.env`:
 | `JWT_SECRET_KEY`                 | JWT signing secret                       | (required)       |
 | `JWT_ALGORITHM`                  | JWT algorithm                            | `HS256`          |
 | `JWT_ACCESS_TOKEN_EXPIRE_MINUTES`| Token expiry in minutes                  | `30`             |
-| `WEATHER_API_KEY`                | OpenWeatherMap key (`demo` for mock)     | `demo`           |
+| `DATABASE_URL`                   | PostgreSQL connection string             | (required)       |
 | `WEATHER_DEFAULT_CITY`           | Default city for weather queries         | `London`         |
 | `CHROMA_PERSIST_DIR`             | ChromaDB data directory                  | `./chroma_db`    |
 | `CHROMA_COLLECTION_NAME`         | ChromaDB collection name                 | `faq_collection` |
